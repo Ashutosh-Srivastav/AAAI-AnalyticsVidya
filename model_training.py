@@ -9,6 +9,8 @@ import pandas as pd
 from xgboost import XGBRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.ensemble import RandomForestRegressor
 
 # Loading training dataframe
 df = pd.read_csv('train_v9rqX0R.csv')
@@ -111,6 +113,7 @@ print(X_train.columns)
 categorical_feats = ['Item_Fat_Content', 'Outlet_Size', 'Outlet_Type', 'Outlet_Location_Type']
 numeric_feats = ['Item_Weight', 'Item_Visibility', 'Item_MRP', 'Outlet_Age']
 
+
 preprocessor = ColumnTransformer([
     ('num', StandardScaler(), numeric_feats),
     ('cat', OneHotEncoder(handle_unknown='ignore'), categorical_feats)
@@ -136,5 +139,77 @@ grid_xgb.fit(X_train, y_train)
 
 print("Best XGB Params:", grid_xgb.best_params_)
 
-test['xgb_Predicted_Sales'] = grid_xgb.predict(test)
-test.to_csv("pred_xgb_F.csv")
+"""
+y_pred_xgb = grid_xgb.predict(X_test)
+import math
+xgb_rmse = math.sqrt(mean_squared_error(y_test, y_pred_xgb))
+xgb_mae  = mean_absolute_error(y_test, y_pred_xgb)
+xgb_r2   = r2_score(y_test, y_pred_xgb)
+
+xgb_r2   = r2_score(y_test, y_pred_xgb)
+print(f"XGBoost RMSE: {xgb_rmse:.2f}, MAE: {xgb_mae:.2f}, R^2: {xgb_r2:.2f}")
+"""
+
+# RF regressor
+numeric_transformer = Pipeline([
+    # ('imputer', SimpleImputer(strategy='mean')),
+    ('scaler', StandardScaler())
+])
+categorical_transformer = Pipeline([
+    # ('imputer', SimpleImputer(strategy='constant', fill_value='Missing')),
+    ('encoder', OneHotEncoder(handle_unknown='ignore'))
+])
+
+preprocessor = ColumnTransformer([
+    ('num', numeric_transformer, numeric_feats),
+    ('cat', categorical_transformer, categorical_feats)
+])
+
+rf_pipeline = Pipeline([
+    ('preprocess', preprocessor),
+    ('rf', RandomForestRegressor(random_state=42))
+])
+
+param_grid_rf = {
+    'rf__n_estimators': [50, 100, 150,200],
+    'rf__max_depth': [None, 5, 10, 15, 20],
+    'rf__min_samples_split': [2, 5, 8, 10, 12]
+}
+
+grid_rf = GridSearchCV(rf_pipeline, param_grid_rf, cv=3, scoring='neg_root_mean_squared_error', n_jobs=-1)
+grid_rf.fit(X_train, y_train)
+print("Best RF Params:", grid_rf.best_params_)
+"""
+y_pred_rf = grid_rf.predict(X_test)
+import math
+rf_rmse = math.sqrt(mean_squared_error(y_test, y_pred_rf))
+rf_mae  = mean_absolute_error(y_test, y_pred_rf)
+rf_r2   = r2_score(y_test, y_pred_rf)
+print(f"Random Forest RMSE: {rf_rmse:.2f}, MAE: {rf_mae:.2f}, R^2: {rf_r2:.2f}")
+
+test['Item_Outlet_Sales'] = grid_rf.predict(test)
+test.to_csv("pred_rf_F1.csv")
+"""
+
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import StackingRegressor
+
+# Define base estimators using best models from GridSearchCV
+base_estimators = [
+    ('xgb', grid_xgb.best_estimator_),
+    # ('cat', grid_cat.best_estimator_), # Environment issues - numpy vrsn compatibility with cat and xgb/rf
+    ('rf',  grid_rf.best_estimator_)
+]
+# Meta-model
+stacker = StackingRegressor(estimators=base_estimators, final_estimator=LinearRegression())
+stacker.fit(X_train, y_train)
+
+# Evaluate stacking model
+y_pred_stack = stacker.predict(X_test)
+stack_rmse = mean_squared_error(y_test, y_pred_stack)
+stack_mae  = mean_absolute_error(y_test, y_pred_stack)
+stack_r2   = r2_score(y_test, y_pred_stack)
+print(f"Stacking RMSE: {stack_rmse:.2f}, MAE: {stack_mae:.2f}, R^2: {stack_r2:.2f}")
+
+test['Item_Outlet_Sales'] = stacker.predict(test)
+test.to_csv("pred_stacker_F1.csv")
