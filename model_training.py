@@ -93,12 +93,12 @@ for feature in ordinal_features:
     train[feature] = encoder.fit_transform(train[feature])
     test[feature]  = encoder.fit_transform(test[feature])
 
-train = pd.get_dummies(train, columns=['Item_Type', 'Item_Identifier_Categories'], drop_first=True)
-test  = pd.get_dummies(test,  columns=['Item_Type', 'Item_Identifier_Categories'], drop_first=True)
+train = pd.get_dummies(train, columns=['Item_Identifier_Categories'], drop_first=True)
+test  = pd.get_dummies(test,  columns=['Item_Identifier_Categories'], drop_first=True)
 
 # Drop cols based on EDA and current relevancy.
-train.drop(labels=['Item_Identifier', "Outlet_Establishment_Year", "Outlet_Identifier"], axis=1, inplace=True)
-test.drop(labels=['Item_Identifier', "Outlet_Establishment_Year", "Outlet_Identifier"],  axis=1, inplace=True)
+train.drop(labels=['Item_Identifier',"Item_Type", "Outlet_Establishment_Year", "Outlet_Identifier"], axis=1, inplace=True)
+test.drop(labels=['Item_Identifier',"Item_Type", "Outlet_Establishment_Year", "Outlet_Identifier"],  axis=1, inplace=True)
 
 # Independent and dependent feature
 X = train.drop('Item_Outlet_Sales', axis=1)
@@ -107,6 +107,11 @@ y = train['Item_Outlet_Sales']
 
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
 print(X_train.columns)
+
+#log transform to deal with skewness:
+y_train = np.log1p(y_train)
+y_test = np.log1p(y_test)
+
 
 # Modelling
 
@@ -139,8 +144,11 @@ grid_xgb.fit(X_train, y_train)
 
 print("Best XGB Params:", grid_xgb.best_params_)
 
-"""
+
 y_pred_xgb = grid_xgb.predict(X_test)
+
+y_pred_xgb = np.expm1(y_pred_xgb)
+
 import math
 xgb_rmse = math.sqrt(mean_squared_error(y_test, y_pred_xgb))
 xgb_mae  = mean_absolute_error(y_test, y_pred_xgb)
@@ -148,7 +156,11 @@ xgb_r2   = r2_score(y_test, y_pred_xgb)
 
 xgb_r2   = r2_score(y_test, y_pred_xgb)
 print(f"XGBoost RMSE: {xgb_rmse:.2f}, MAE: {xgb_mae:.2f}, R^2: {xgb_r2:.2f}")
-"""
+
+test['Item_Outlet_Sales'] = np.expm1(grid_xgb.predict(test))
+test.to_csv("pred_grid_FFL.csv")
+
+test.drop(columns = ["Item_Outlet_Sales"], inplace=True)
 
 # RF regressor
 numeric_transformer = Pipeline([
@@ -179,17 +191,18 @@ param_grid_rf = {
 grid_rf = GridSearchCV(rf_pipeline, param_grid_rf, cv=3, scoring='neg_root_mean_squared_error', n_jobs=-1)
 grid_rf.fit(X_train, y_train)
 print("Best RF Params:", grid_rf.best_params_)
-"""
-y_pred_rf = grid_rf.predict(X_test)
+
+y_pred_rf = np.expm1(grid_rf.predict(X_test))
 import math
 rf_rmse = math.sqrt(mean_squared_error(y_test, y_pred_rf))
 rf_mae  = mean_absolute_error(y_test, y_pred_rf)
 rf_r2   = r2_score(y_test, y_pred_rf)
 print(f"Random Forest RMSE: {rf_rmse:.2f}, MAE: {rf_mae:.2f}, R^2: {rf_r2:.2f}")
 
-test['Item_Outlet_Sales'] = grid_rf.predict(test)
-test.to_csv("pred_rf_F1.csv")
-"""
+test['Item_Outlet_Sales'] = np.expm1(grid_rf.predict(test))
+test.to_csv("pred_rf_FFN.csv")
+
+test.drop(columns = ["Item_Outlet_Sales"], inplace=True)
 
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import StackingRegressor
@@ -205,11 +218,49 @@ stacker = StackingRegressor(estimators=base_estimators, final_estimator=LinearRe
 stacker.fit(X_train, y_train)
 
 # Evaluate stacking model
-y_pred_stack = stacker.predict(X_test)
-stack_rmse = mean_squared_error(y_test, y_pred_stack)
+y_pred_stack = np.expm1(stacker.predict(X_test))
+stack_rmse = math.sqrt(mean_squared_error(y_test, y_pred_stack))
 stack_mae  = mean_absolute_error(y_test, y_pred_stack)
 stack_r2   = r2_score(y_test, y_pred_stack)
 print(f"Stacking RMSE: {stack_rmse:.2f}, MAE: {stack_mae:.2f}, R^2: {stack_r2:.2f}")
 
-test['Item_Outlet_Sales'] = stacker.predict(test)
-test.to_csv("pred_stacker_F1.csv")
+test['Item_Outlet_Sales'] = np.expm1(stacker.predict(test))
+test.to_csv("pred_stacker_FF.csv")
+test.drop(columns = ["Item_Outlet_Sales"], inplace=True)
+
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+
+# Define Neural Network Model
+model = Sequential([
+    Dense(64, activation='relu', input_shape=(X_train.shape[1],)),  # Input Layer
+    Dropout(0.2),  
+    Dense(128, activation='relu'), 
+    Dropout(0.2),
+    Dense(64, activation='relu'),  
+    Dense(1)  # Output Layer
+])
+
+# Compile Model
+model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+
+# Train Model with Early Stopping
+early_stopping = keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+
+history = model.fit(X_train, y_train, validation_data=(X_test, y_test),
+                    epochs=100, batch_size=32, callbacks=[early_stopping], verbose=1)
+
+# Make Predictions
+y_pred = np.expm1(model.predict(X_test)).flatten()
+
+# Evaluate Model
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+mae = mean_absolute_error(y_test, y_pred)
+r2 = r2_score(y_test, y_pred)
+
+print(f"Neural Network RMSE: {rmse:.2f}, MAE: {mae:.2f}, R²: {r2:.2f}")
+
+test['Item_Outlet_Sales'] = np.expm1(model.predict(test)).flatten()
+test.to_csv("pred_NN_FFN.csv")
